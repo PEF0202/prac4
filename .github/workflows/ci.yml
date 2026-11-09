@@ -1,0 +1,87 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: ["main", "docs/*"]
+    tags:
+      - "*"
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.11.10-slim # Заданный образом вариант 2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Print versions and check syntax
+        run: |
+          python --version
+          echo "Commit: ${{ github.sha }}"
+          python -m py_compile *.py
+      - name: Задание 1 - Проверка наличия README.md и непустого app.py
+        run: |
+          if [ ! -f README.md ]; then echo "Нет README.md"; exit 1; fi
+          if [ ! -s app.py ]; then echo "app.py пуст или отсутствует"; exit 1; fi
+
+  test:
+    needs: validate
+    # Задание 4 - docs/* запускает только validate
+    if: ${{ !startsWith(github.ref, 'refs/heads/docs/') }}
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.11.10-slim
+    steps:
+      - uses: actions/checkout@v4
+      - name: Задание 2 - Автоматический запуск тестов
+        run: python -m unittest discover -s tests -v
+
+  package:
+    needs: test
+    # Задание 4 - package выполняется только для main и тегов
+    if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Задание 3 - Формирование артефакта
+        run: |
+          mkdir dist
+          cp books.py README.md Dockerfile books.json.example dist/
+          echo "Commit: ${{ github.sha }}" > dist/manifest.txt
+          echo "Pipeline ID: ${{ github.run_id }}" >> dist/manifest.txt
+          ls -l dist >> dist/manifest.txt
+      - name: Публикация артефакта (на 7 дней)
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-dist
+          path: dist/
+          retention-days: 7
+
+  deploy_test:
+    needs: package
+    # Развертывание только из main
+    if: ${{ github.ref == 'refs/heads/main' }}
+    environment: test/books # Среда из варианта 2
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.11.10-slim
+    steps:
+      - name: Скачивание артефакта в каталог deploy/test
+        uses: actions/download-artifact@v4
+        with:
+          name: app-dist
+          path: deploy/test
+      - name: Задание 4 - Проверка защищенной переменной
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+          APP_PORT: ${{ vars.APP_PORT }}
+        run: |
+          if [ -z "$DEPLOY_TOKEN" ]; then echo "Секрет отсутствует"; exit 1; fi
+          echo "Секрет на месте. Порт приложения: $APP_PORT"
+      - name: Задание 5 - Дымовая проверка
+        working-directory: deploy/test
+        run: |
+          python books.py --help
+          python books.py search "1984" books.json.example > deployment.txt
+          cat deployment.txt
